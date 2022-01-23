@@ -173,7 +173,7 @@ end
     end
 end
 
-
+include("rules.jl")
 include("logic.jl")
 include("typeanalysis.jl")
 include("typetree.jl")

@@ -122,6 +122,11 @@ function is_primitive_func(@nospecialize(TT))
     return false
 end
 
+import Core.Compiler: argtypes_to_type
+function has_rule(@nospecialize(TT), world=Base.get_world_counter())
+    atype = Tuple{typeof(EnzymeRules.has_rule), TT.parameters...}
+    return ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world) !== nothing
+end
 
 # branch on https://github.com/JuliaLang/julia/pull/41328
 @static if isdefined(Core.Compiler, :is_stmt_inline)
@@ -130,7 +135,7 @@ function Core.Compiler.inlining_policy(
     interp::EnzymeInterpeter, @nospecialize(src), stmt_flag::UInt8,
     mi::MethodInstance, argtypes::Vector{Any})
 
-    if is_primitive_func(mi.specTypes)
+    if is_primitive_func(mi.specTypes) || has_rule(mi.specTypes, interp.world)
         return nothing
     end
 
@@ -146,7 +151,7 @@ enzyme_inlining_policy(@nospecialize(src)) = Core.Compiler.default_inlining_poli
 Core.Compiler.inlining_policy(::EnzymeInterpeter) = enzyme_inlining_policy
 function Core.Compiler.resolve_todo(todo::InliningTodo, state::InliningState{S, T, <:typeof(enzyme_inlining_policy)}) where {S<:Union{Nothing, Core.Compiler.EdgeTracker}, T}
     mi = todo.mi
-    if is_primitive_func(mi.specTypes)
+    if is_primitive_func(mi.specTypes) || has_rule(mi.specTypes)
         return Core.Compiler.compileable_specialization(state.et, todo.spec.match)
     end
 

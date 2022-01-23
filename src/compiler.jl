@@ -8,6 +8,8 @@ import Enzyme: Const, Active, Duplicated, DuplicatedNoNeed, BatchDuplicated, Bat
 
 using Enzyme
 
+import ..Enzyme: EnzymeRules
+
 using LLVM, GPUCompiler, Libdl
 import Enzyme_jll
 
