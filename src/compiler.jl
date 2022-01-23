@@ -5440,7 +5440,12 @@ end
     actualRetType = nothing
     for (mi, k) in meta.compiled
         k_name = GPUCompiler.safe_name(k.specfunc)
-        haskey(functions(mod), k_name) || continue
+        if has_rule(mi.specTypes)
+            @warn "Rule support not yet implemented"
+            continue
+        elseif !haskey(functions(mod), k_name)
+            continue
+        end
 
         llvmfn = functions(mod)[k_name]
         if llvmfn == primalf
@@ -5471,7 +5476,7 @@ end
 
         Base.isbindingresolved(jlmod, name) && isdefined(jlmod, name) || continue
         func = getfield(jlmod, name)
-
+        
         sparam_vals = mi.specTypes.parameters[2:end] # mi.sparam_vals
         if func == Base.eps || func == Base.nextfloat || func == Base.prevfloat
             handleCustom("jl_inactive_inout", [StringAttribute("enzyme_inactive"; ctx),
