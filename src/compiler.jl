@@ -2162,6 +2162,80 @@ function wait_rev(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gut
     return nothing
 end
 
+
+function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
+    normal = (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
+    if shadowR != C_NULL && normal !== nothing
+        unsafe_store!(shadowR, normal.ref)
+    end
+
+    emit_error(LLVM.Builder(B), "Enzyme: Not yet implemented custom forward handler")
+    return nothing
+end
+
+function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef}, tapeR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
+    normal = (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
+    if shadowR != C_NULL && normal !== nothing
+        unsafe_store!(shadowR, normal.ref)
+    end
+
+    orig = LLVM.Instruction(OrigCI)
+
+    # TODO: don't inject the code multiple times for multiple calls
+    
+    # 1) extract out the MI from metadata
+    mi = ...
+    
+    active = API.EnzymeGradientUtilsIsConstantValue(gutils, orig) == 0
+
+
+    ops = collect(operands(orig))[1:end-1]
+
+    args = LLVM.Value[]
+
+    for op in ops
+        val = LLVM.Value(API.EnzymeGradientUtilsNewFromOriginal(gutils, op))
+        push!(args, val)
+
+        active = API.EnzymeGradientUtilsIsConstantValue(gutils, op) == 0
+        # TODO type analysis deduce if duplicated vs active
+        if active
+            push!(args, LLVM.Value(API.EnzymeGradientUtilsInvertPointer(gutils, op, B)))
+        end
+    end
+    
+    tt = annotate_tuple_type(mi.specTypes, activity)
+    funcspec = FunctionSpec(EnzymeRules.augmented_forward, tt, #=kernel=# false, #=name=# nothing)
+
+    # TODO: GPU support 
+    # 2) Use the MI to create the correct augmented fwd/reverse
+    target = GPUCompiler.NativeCompilerTarget()
+    params = Compiler.PrimalCompilerParams()
+    job    = CompilerJob(target, funcspec, params)  
+
+    otherMod, meta = GPUCompiler.codegen(:llvm, job, optimize=false, validate=false)
+    entry = name(meta.entry)
+
+    # 3) Link the corresponding module
+    builder  = LLVM.Builder(B)
+    bb = LLVM.position(builder)
+    mod = LLVM.parent(LLVM.parent(bb))
+    LLVM.link!(mod, otherMod)
+
+    # 4) Call the function
+    entry = functions(mod)[entry]
+
+    emit_error(builder, "Enzyme: Not yet implemented custom augmented forward handler")
+
+    return nothing
+end
+
+
+function enzyme_custom_rev(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, tape::LLVM.API.LLVMValueRef)::Cvoid
+    emit_error(LLVM.Builder(B), "Enzyme: Not yet implemented custom reverse handler")
+    return nothing
+end
+
 function arraycopy_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
     
     orig = LLVM.Instruction(OrigCI)
@@ -3829,6 +3903,12 @@ function __init__()
         @cfunction(enq_work_fwd, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef}))
     )
     register_handler!(
+        ("enzyme_custom",),
+        @cfunction(enzyme_custom_augfwd, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef})),
+        @cfunction(enzyme_custom_rev, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, LLVM.API.LLVMValueRef)),
+        @cfunction(enzyme_custom_fwd, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef}))
+    )
+    register_handler!(
         ("jl_wait",),
         @cfunction(wait_augfwd, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef}, Ptr{LLVM.API.LLVMValueRef})),
         @cfunction(wait_rev, Cvoid, (LLVM.API.LLVMBuilderRef, LLVM.API.LLVMValueRef, API.EnzymeGradientUtilsRef, LLVM.API.LLVMValueRef)),
@@ -5438,12 +5518,11 @@ end
     jobref = Ref(job)
 
     actualRetType = nothing
+    customDerivativeNames = String[]
     for (mi, k) in meta.compiled
         k_name = GPUCompiler.safe_name(k.specfunc)
-        if has_rule(mi.specTypes)
-            @warn "Rule support not yet implemented"
-            continue
-        elseif !haskey(functions(mod), k_name)
+        has_custom_rule = has_rule(mi.specTypes)
+        if !(haskey(functions(mod), k_name) || has_custom_rule)
             continue
         end
 
@@ -5484,6 +5563,10 @@ end
                                       EnumAttribute("speculatable", 0; ctx),
                                       StringAttribute("enzyme_shouldrecompute"; ctx)
                                                       ])
+            continue
+        end
+        if has_custom_rule
+            handleCustom("enzyme_custom")
             continue
         end
         if func == Base.to_tuple_type
