@@ -2180,15 +2180,32 @@ function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMV
     end
 
     orig = LLVM.Instruction(OrigCI)
+    ctx = LLVM.context(orig)
+
+    # 1) extract out the MI from attributes
+    llvmfn = LLVM.called_value(orig)
+    mi = nothing
+    for fattr in collect(function_attributes(llvmfn))
+        if isa(fattr, LLVM.StringAttribute)
+            if kind(fattr) == "enzymejl_mi"
+                ptr = reinterpret(Ptr{Cvoid}, parse(Int, LLVM.value(fattr)))
+                mi = Base.unsafe_pointer_to_objref(ptr)
+                break
+            end
+        end
+    end
+    builder  = LLVM.Builder(B)
+
+    if mi === nothing
+        emit_error(builder, "Enzyme: Custom augmented forward handler, could not find MI")
+    end
+    emit_error(builder, "Enzyme: Custom augmented forward handler, not yet implemented")
+    return nothing
 
     # TODO: don't inject the code multiple times for multiple calls
-    
-    # 1) extract out the MI from metadata
-    mi = ...
-    
+
+    # 2) Create activity, and annotate function spec
     active = API.EnzymeGradientUtilsIsConstantValue(gutils, orig) == 0
-
-
     ops = collect(operands(orig))[1:end-1]
 
     args = LLVM.Value[]
@@ -2207,8 +2224,11 @@ function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMV
     tt = annotate_tuple_type(mi.specTypes, activity)
     funcspec = FunctionSpec(EnzymeRules.augmented_forward, tt, #=kernel=# false, #=name=# nothing)
 
-    # TODO: GPU support 
-    # 2) Use the MI to create the correct augmented fwd/reverse
+    # 3) Use the MI to create the correct augmented fwd/reverse
+    # TODO:
+    #  - GPU support
+    #  - When OrcV2 only use a MaterializationUnit to avoid mutation of the module here
+    
     target = GPUCompiler.NativeCompilerTarget()
     params = Compiler.PrimalCompilerParams()
     job    = CompilerJob(target, funcspec, params)  
@@ -2216,13 +2236,12 @@ function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMV
     otherMod, meta = GPUCompiler.codegen(:llvm, job, optimize=false, validate=false)
     entry = name(meta.entry)
 
-    # 3) Link the corresponding module
-    builder  = LLVM.Builder(B)
+    # 4) Link the corresponding module
     bb = LLVM.position(builder)
     mod = LLVM.parent(LLVM.parent(bb))
     LLVM.link!(mod, otherMod)
 
-    # 4) Call the function
+    # 5) Call the function
     entry = functions(mod)[entry]
 
     emit_error(builder, "Enzyme: Not yet implemented custom augmented forward handler")
