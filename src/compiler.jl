@@ -5213,7 +5213,12 @@ end
             # TODO: https://github.com/EnzymeAD/Enzyme.jl/issues/347
             # We might find undefined fields here and when we try to load from them
             # Julia will throw an exception.
-            values(sret[])
+            try
+                values(sret[])
+            catch
+                @error "Struct return contained undefined values" eltype(sret) sizeof(sret)
+                rethrow()
+            end
         end
     else
         return quote
