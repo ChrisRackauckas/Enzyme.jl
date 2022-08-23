@@ -3,6 +3,7 @@ using Random
 using Core.Compiler: AbstractInterpreter, InferenceResult, InferenceParams, InferenceState, OptimizationParams, MethodInstance
 using GPUCompiler: CodeCache, WorldView
 import ..Enzyme
+import ..EnzymeRules
 
 struct EnzymeInterpeter <: AbstractInterpreter
     global_cache::CodeCache

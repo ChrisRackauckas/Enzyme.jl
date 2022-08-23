@@ -5,6 +5,7 @@ import Enzyme: Const, Active, Duplicated, DuplicatedNoNeed, BatchDuplicated, Bat
                Annotation, guess_activity, eltype, 
                API, TypeTree, typetree, only!, shift!, data0!, merge!,
                TypeAnalysis, FnTypeInfo, Logic, allocatedinline, ismutabletype
+import ..EnzymeRules
 
 using Enzyme
 
@@ -5540,7 +5541,7 @@ end
     customDerivativeNames = String[]
     for (mi, k) in meta.compiled
         k_name = GPUCompiler.safe_name(k.specfunc)
-        has_custom_rule = has_rule(mi.specTypes)
+        has_custom_rule = EnzymeRules.has_rule(mi.specTypes)
         if !(haskey(functions(mod), k_name) || has_custom_rule)
             continue
         end
