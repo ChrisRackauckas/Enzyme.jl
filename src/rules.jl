@@ -20,14 +20,26 @@ function reverse end
 import Core.Compiler: argtypes_to_type
 function has_frule(@nospecialize(TT), world=Base.get_world_counter())
     atype = Tuple{typeof(EnzymeRules.forward), Type{TT}, Type, Vector{Type}}
-    res = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world) !== nothing
-    return res
+
+    if VERSION < v"1.8.0-"
+        res = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world)
+    else
+        res = ccall(:jl_gf_invoke_lookup, Any, (Any, Any, UInt), atype, nothing, world)
+    end
+
+    return res !== nothing
 end
 
 function has_rrule(@nospecialize(TT), world=Base.get_world_counter())
     atype = Tuple{typeof(EnzymeRules.reverse), Type{TT}, Type, Vector{Type}}
-    res = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world) !== nothing
-    return res
+    
+    if VERSION < v"1.8.0-"
+        res = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world)
+    else
+        res = ccall(:jl_gf_invoke_lookup, Any, (Any, Any, UInt), atype, nothing, world)
+    end
+
+    return res !== nothing
 end
 
 end
