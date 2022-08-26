@@ -5778,6 +5778,10 @@ end
         end
         
         foundTys[k_name] = (eltype(llvmtype(llvmfn)), mi)
+        if has_custom_rule
+            handleCustom("enzyme_custom")
+            continue
+        end
 
         Base.isbindingresolved(jlmod, name) && isdefined(jlmod, name) || continue
         func = getfield(jlmod, name)
@@ -5789,10 +5793,6 @@ end
                                       EnumAttribute("speculatable", 0; ctx),
                                       StringAttribute("enzyme_shouldrecompute"; ctx)
                                                       ])
-            continue
-        end
-        if has_custom_rule
-            handleCustom("enzyme_custom")
             continue
         end
         if func == Base.to_tuple_type

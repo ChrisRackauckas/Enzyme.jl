@@ -11,7 +11,7 @@ using Test
        return nothing
     end
 
-    function EnzymeRules.forward(::Type{Tuple{typeof(rule_f), Float64}}, RT, Args)
+    function Enzyme.EnzymeRules.forward(::Type{Tuple{typeof(rule_f), Float64}}, RT, Args)
         @assert Args[1] <: Const
         if RT <: DuplicatedNoNeed && Args[2] <: Duplicated
             tmp1(func, x) = 10+2*x.val*x.dval
@@ -36,7 +36,7 @@ using Test
         return nothing
     end
 
-    function EnzymeRules.forward(::Type{Tuple{typeof(rule_fip), T}}, RT, Args) where {T}
+    function Enzyme.EnzymeRules.forward(::Type{Tuple{typeof(rule_fip), T}}, RT, Args) where {T}
         @assert Args[1] <: Const
         @assert RT <: Const
         if Args[2] <: Duplicated
