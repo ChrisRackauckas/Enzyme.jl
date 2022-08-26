@@ -1,5 +1,6 @@
 module Interpreter
 using Random
+import Enzyme: API
 using Core.Compiler: AbstractInterpreter, InferenceResult, InferenceParams, InferenceState, OptimizationParams, MethodInstance
 using GPUCompiler: CodeCache, WorldView
 import ..Enzyme
@@ -18,7 +19,9 @@ struct EnzymeInterpeter <: AbstractInterpreter
     inf_params::InferenceParams
     opt_params::OptimizationParams
 
-    function EnzymeInterpeter(cache::CodeCache, mt::Union{Nothing,Core.MethodTable}, world::UInt)
+    mode::API.CDerivativeMode
+
+    function EnzymeInterpeter(cache::CodeCache, mt::Union{Nothing,Core.MethodTable}, world::UInt, mode::API.CDerivativeMode)
         @assert world <= Base.get_world_counter()
 
         return new(
@@ -35,6 +38,7 @@ struct EnzymeInterpeter <: AbstractInterpreter
             InferenceParams(unoptimize_throw_blocks=false),
             VERSION >= v"1.8.0-DEV.486" ? OptimizationParams() :
                                           OptimizationParams(unoptimize_throw_blocks=false),
+            mode
         )
     end
 end
@@ -123,12 +127,6 @@ function is_primitive_func(@nospecialize(TT))
     return false
 end
 
-import Core.Compiler: argtypes_to_type
-function has_rule(@nospecialize(TT), world=Base.get_world_counter())
-    atype = Tuple{typeof(EnzymeRules.has_rule), TT.parameters...}
-    return ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world) !== nothing
-end
-
 # branch on https://github.com/JuliaLang/julia/pull/41328
 @static if isdefined(Core.Compiler, :is_stmt_inline)
 
@@ -136,8 +134,17 @@ function Core.Compiler.inlining_policy(
     interp::EnzymeInterpeter, @nospecialize(src), stmt_flag::UInt8,
     mi::MethodInstance, argtypes::Vector{Any})
 
-    if is_primitive_func(mi.specTypes) || has_rule(mi.specTypes, interp.world)
+    if is_primitive_func(mi.specTypes)
         return nothing
+    end
+    if inter.mode == API.DEM_ForwardMode
+        if EnzymeRules.has_frule(mi.specTypes, interp.world)
+            return nothing
+        end
+    else
+        if EnzymeRules.has_rrule(mi.specTypes, interp.world)
+            return nothing
+        end
     end
 
     return Base.@invoke Core.Compiler.inlining_policy(
@@ -152,9 +159,22 @@ enzyme_inlining_policy(@nospecialize(src)) = Core.Compiler.default_inlining_poli
 Core.Compiler.inlining_policy(::EnzymeInterpeter) = enzyme_inlining_policy
 function Core.Compiler.resolve_todo(todo::InliningTodo, state::InliningState{S, T, <:typeof(enzyme_inlining_policy)}) where {S<:Union{Nothing, Core.Compiler.EdgeTracker}, T}
     mi = todo.mi
-    if is_primitive_func(mi.specTypes) || has_rule(mi.specTypes)
+    if is_primitive_func(mi.specTypes) 
         return Core.Compiler.compileable_specialization(state.et, todo.spec.match)
     end
+    if EnzymeRules.has_frule(mi.specTypes) || EnzymeRules.has_rrule(mi.specTypes)
+        return Core.Compiler.compileable_specialization(state.et, todo.spec.match)
+    end
+    ## TODO @vchuravy separate by mode like below
+    # if state.inter.mode == API.DEM_ForwardMode
+    #     if EnzymeRules.has_frule(mi.specTypes)
+    #         return Core.Compiler.compileable_specialization(state.et, todo.spec.match)
+    #     end
+    # else
+    #     if EnzymeRules.has_rrule(mi.specTypes)
+    #         return Core.Compiler.compileable_specialization(state.et, todo.spec.match)
+    #     end
+    # end
 
     return Base.@invoke Core.Compiler.resolve_todo(
         todo::InliningTodo, state::InliningState)

@@ -224,10 +224,12 @@ declare_allocobj!(mod) = get_function!(mod, "julia.gc_alloc_obj") do ctx
     
 	T_pjlvalue = LLVM.PointerType(T_jlvalue)
     T_ppjlvalue = LLVM.PointerType(T_pjlvalue)
+    
+    T_pi8 = LLVM.PointerType(LLVM.IntType(8; ctx))
 
 	#TODO make size_t > 32 => 64, else 32
 	T_size = LLVM.IntType((sizeof(Csize_t)*8) > 32 ? 64 : 32; ctx)
-    LLVM.FunctionType(T_prjlvalue, [LLVM.PointerType(T_ppjlvalue), T_size, T_prjlvalue])
+    LLVM.FunctionType(T_prjlvalue, [T_pi8, T_size, T_prjlvalue])
 end
 function emit_allocobj!(B, T, size)
     curent_bb = position(B)
@@ -864,15 +866,16 @@ function emit_gc_preserve_end(B::LLVM.Builder, token)
 end
 
 function generic_setup(orig, func, ReturnType, gutils, start, ctx::LLVM.Context, B::LLVM.Builder,  lookup; sret=nothing, tape=nothing)
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
     width = API.EnzymeGradientUtilsGetWidth(gutils)
     mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
 
     ops = collect(operands(orig))[(start+1):end-1]
     
     if tape === nothing
-        llvmf = nested_codegen!(mod, func, Tuple{Any, AnyArray(length(ops)), AnyArray(Int64(width)*length(ops)), Ptr{UInt8}, Val{Int64(width)}, Val{ReturnType}})
+        llvmf = nested_codegen!(mode, mod, func, Tuple{Any, AnyArray(length(ops)), AnyArray(Int64(width)*length(ops)), Ptr{UInt8}, Val{Int64(width)}, Val{ReturnType}})
     else
-        llvmf = nested_codegen!(mod, func, Tuple{Any, AnyArray(length(ops)), Ptr{Any}, Ptr{UInt8}, Any, Val{Int64(width)}, Val{ReturnType}})
+        llvmf = nested_codegen!(mode, mod, func, Tuple{Any, AnyArray(length(ops)), Ptr{Any}, Ptr{UInt8}, Any, Val{Int64(width)}, Val{ReturnType}})
     end
 
     T_int8 = LLVM.Int8Type(ctx)
@@ -1547,7 +1550,7 @@ else
 const ctxToThreadSafe = Dict{LLVM.Context, LLVM.ThreadSafeContext}()
 end
 
-function nested_codegen!(mod::LLVM.Module, f, tt)
+function nested_codegen!(mode::API.CDerivativeMode, mod::LLVM.Module, f, tt)
     # TODO: Put a cache here index on `mod` and f->tt
 
     ctx = LLVM.context(mod)
@@ -1564,15 +1567,17 @@ end
     #  - When OrcV2 only use a MaterializationUnit to avoid mutation of the module here
 
     target = GPUCompiler.NativeCompilerTarget()
-    params = Compiler.PrimalCompilerParams()
+    params = Compiler.PrimalCompilerParams(mode)
     job    = CompilerJob(target, funcspec, params)
 
-    otherMod, meta = GPUCompiler.codegen(:llvm, job; optimize=false, validate=false, ctx)
+    # TODO
+    parent_job = nothing
+    otherMod, meta = GPUCompiler.codegen(:llvm, job; optimize=false, cleanup=false, validate=false, parent_job=parent_job, ctx)
     entry = name(meta.entry)
 
     # Apply first stage of optimization's so that this module is at the same stage as `mod`
     optimize!(otherMod, JIT.get_tm())
-
+    
     # 4) Link the corresponding module
     LLVM.link!(mod, otherMod)
 
@@ -1833,7 +1838,8 @@ function threadsfor_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRe
 else
     tt = Tuple{funcT, Core.Ptr{Cvoid}, dfuncT, Type{thunkTy}, Bool}
 end
-    entry = nested_codegen!(mod, runtime_pfor_fwd, tt)
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    entry = nested_codegen!(mode, mod, runtime_pfor_fwd, tt)
     permit_inlining!(entry)
     push!(function_attributes(entry), EnumAttribute("alwaysinline"; ctx))
 
@@ -1874,7 +1880,8 @@ function threadsfor_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
 else
     tt = Tuple{funcT, Core.Ptr{Cvoid}, dfuncT, Type{thunkTy}, Val{any_jltypes(GetTapeType(thunkTy))}, Bool}
 end
-    entry = nested_codegen!(mod, runtime_pfor_augfwd, tt)
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    entry = nested_codegen!(mode, mod, runtime_pfor_augfwd, tt)
     permit_inlining!(entry)
     push!(function_attributes(entry), EnumAttribute("alwaysinline"; ctx))
 
@@ -1925,7 +1932,8 @@ function threadsfor_rev(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRe
 else
     tt = Tuple{funcT, Core.Ptr{Cvoid}, dfuncT, Type{thunkTy}, Val{any_jltypes(GetTapeType(thunkTy))}, STT, Bool}
 end
-    entry = nested_codegen!(mod, runtime_pfor_rev, tt)
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    entry = nested_codegen!(mode, mod, runtime_pfor_rev, tt)
     permit_inlining!(entry)
     push!(function_attributes(entry), EnumAttribute("alwaysinline"; ctx))
 
@@ -1952,7 +1960,8 @@ function newtask_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, 
     mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
 
     width = API.EnzymeGradientUtilsGetWidth(gutils)
-    fun = nested_codegen!(mod, runtime_newtask_fwd, Tuple{Any, Any, Any, Int, Val{width}})
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    fun = nested_codegen!(mode, mod, runtime_newtask_fwd, Tuple{Any, Any, Any, Int, Val{width}})
 
     B = LLVM.Builder(B)
     
@@ -1995,7 +2004,8 @@ function newtask_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRe
 
     GPUCompiler.@safe_warn "active variables passed by value to jl_new_task are not yet supported"
     width = API.EnzymeGradientUtilsGetWidth(gutils)
-    fun = nested_codegen!(mod, runtime_newtask_augfwd, Tuple{Any, Any, Any, Int, Val{width}})
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    fun = nested_codegen!(mode, mod, runtime_newtask_augfwd, Tuple{Any, Any, Any, Int, Val{width}})
 
     B = LLVM.Builder(B)
     sret = allocate_sret!(gutils, 2, ctx)
@@ -2165,23 +2175,214 @@ end
 
 
 function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
-    normal = (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
-    if shadowR != C_NULL && normal !== nothing
-        unsafe_store!(shadowR, normal.ref)
+    orig = LLVM.Instruction(OrigCI)
+    ctx = LLVM.context(orig)
+    
+    width = API.EnzymeGradientUtilsGetWidth(gutils)
+
+    if shadowR != C_NULL
+        unsafe_store!(shadowR,UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, llvmtype(orig)))).ref)
     end
 
-    emit_error(LLVM.Builder(B), "Enzyme: Not yet implemented custom forward handler")
+    # 1) extract out the MI from attributes
+    mi = nothing
+    job = nothing
+    for fattr in collect(function_attributes(LLVM.called_value(orig)))
+        if isa(fattr, LLVM.StringAttribute)
+            if kind(fattr) == "enzymejl_mi"
+                ptr = reinterpret(Ptr{Cvoid}, parse(Int, LLVM.value(fattr)))
+                mi = Base.unsafe_pointer_to_objref(ptr)
+            end
+            if kind(fattr) == "enzymejl_job"
+                ptr = reinterpret(Ptr{Cvoid}, parse(Int, LLVM.value(fattr)))
+                job = Base.unsafe_pointer_to_objref(ptr)[]
+            end
+        end
+    end
+    B  = LLVM.Builder(B)
+
+    if mi === nothing
+        emit_error(builder, "Enzyme: Custom forward handler, could not find MI")
+        return
+    end
+    
+    # TODO: don't inject the code multiple times for multiple calls
+
+    # 2) Create activity, and annotate function spec
+    active = API.EnzymeGradientUtilsIsConstantValue(gutils, orig) == 0
+    
+    ops = collect(operands(orig))
+    called = ops[end]
+    ops = ops[1:end-1]
+
+    args = LLVM.Value[]
+
+    activity = Type[]
+    
+    sret = false
+    returnRoots = false
+
+	jlargs = classify_arguments(mi.specTypes, eltype(llvmtype(called)), sret, returnRoots)
+
+    op_idx = 1
+    
+    
+    alloctx = LLVM.Builder(ctx)
+    position!(alloctx, LLVM.BasicBlock(API.EnzymeGradientUtilsAllocationBlock(gutils)))
+   
+    for arg in jlargs
+        if arg.cc == GPUCompiler.GHOST
+            push!(activity, Const{arg.typ})
+            continue
+        end
+        
+        op = ops[op_idx]
+        op_idx+=1
+        
+        val = LLVM.Value(API.EnzymeGradientUtilsNewFromOriginal(gutils, op))
+        
+        activep = API.EnzymeGradientUtilsIsConstantValue(gutils, op) == 0
+        # TODO type analysis deduce if duplicated vs active
+        if activep
+
+            ival = LLVM.Value(API.EnzymeGradientUtilsInvertPointer(gutils, op, B))
+            if width == 1
+                Ty = Duplicated{arg.typ}
+            else
+                Ty = BatchDuplicated{arg.typ, width}
+                ST = NTuple{Int64(width), arg.typ}
+                ival2 = emit_allocobj!(B, ST)
+                pc = pointercast!(B, ival2, LLVM.PointerType(llvmtype(ival), LLVM.addrspace(llvmtype(ival2))))
+                store!(B, ival, pc)
+                @show ival2
+                ival = ival2
+            end
+            
+            llty = convert(LLVMType, Ty; ctx)
+
+
+            arval = LLVM.UndefValue(llty)
+            arval = insert_value!(B, arval, val, 0)
+            arval = insert_value!(B, arval, ival, 1)
+
+            al = alloca!(alloctx, llvmtype(arval))
+            al = addrspacecast!(B, al, LLVM.PointerType(llvmtype(arval), 10))
+            store!(B, arval, al)
+            push!(args, al)
+            push!(activity, Ty)
+        else
+            push!(args, val)
+            push!(activity, Const{arg.typ})
+        end
+
+    end
+    
+    @assert op_idx-1 == length(ops)
+
+    interp = GPUCompiler.get_interpreter(job)
+    RealRt = Core.Compiler.typeinf_ext_toplevel(interp, mi).rettype
+
+    needsPrimal = (unsafe_load(normalR) != C_NULL)
+    RT = Const{RealRt}
+    if active
+        if needsPrimal
+            if width == 1
+                RT = Duplicated{RealRt}
+            else
+                RT = BatchDuplicated{RealRt, width}
+            end
+        else
+            if width == 1
+                RT = DuplicatedNoNeed{RealRt}
+            else
+                RT = BatchDuplicatedNoNeed{RealRt, width}
+            end
+        end
+    end
+    func = EnzymeRules.forward(mi.specTypes, RT, activity)
+    
+    if func == nothing
+        emit_error(B, "Enzyme: activity setting not provided for "*(string(RT))*" "*string(activity))
+        return
+    end
+
+    mode = API.EnzymeGradientUtilsGetMode(gutils)
+    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    llvmf = nested_codegen!(mode, mod, func, Tuple{activity...})
+    
+    sret = nothing
+    if !isempty(parameters(llvmf)) && any(map(k->kind(k)==kind(EnumAttribute("sret"; ctx)), collect(parameter_attributes(llvmf, 1))))
+        sret = alloca!(alloctx, eltype(llvmtype(parameters(llvmf)[1])))
+        pushfirst!(args, sret)
+    end
+
+    for i in 1:length(args)
+        party =  llvmtype(parameters(llvmf)[i])
+        if llvmtype(args[i]) == party
+            continue
+        end
+        if LLVM.addrspace(party) != 0
+            args[i] = addrspacecast!(B, args[i], party)
+        else
+            GPUCompiler.@safe_error "Calling convention mismatch", party, args[i], i, llvmf
+            return
+        end
+    end
+
+    @show args
+
+    res = LLVM.call!(B, llvmf, args)
+    
+    hasNoRet = any(map(k->kind(k)==kind(EnumAttribute("noreturn"; ctx)), collect(function_attributes(llvmf))))
+                                                      
+    if hasNoRet
+        return nothing
+    end
+    
+    if sret !== nothing
+        res = load!(B, sret)
+    end
+
+    @show res
+    shadowV = C_NULL
+    normalV = C_NULL
+
+    if !active
+        if needsPrimal
+            normalV = res.ref
+        end
+    else
+        if !needsPrimal
+            shadowV = res.ref
+        else
+            normalV = extract_value!(B, res, 0).ref
+            shadowV = extract_value!(B, res, 1).ref
+        end
+    end
+
+    if shadowR != C_NULL
+        unsafe_store!(shadowR, shadowV)
+    end
+    
+    # Delete the primal code
+    if needsPrimal
+        unsafe_store!(normalR, normalV)
+    else
+        LLVM.API.LLVMInstructionEraseFromParent(LLVM.Instruction(API.EnzymeGradientUtilsNewFromOriginal(gutils, orig)))
+    end
+
     return nothing
 end
 
 function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef}, tapeR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
-    normal = (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
-    if shadowR != C_NULL && normal !== nothing
+    orig = LLVM.Instruction(OrigCI)
+    ctx = LLVM.context(orig)
+    normal = LLVM.Value(API.EnzymeGradientUtilsNewFromOriginal(gutils, orig))
+    if shadowR != C_NULL
         unsafe_store!(shadowR, normal.ref)
     end
 
     orig = LLVM.Instruction(OrigCI)
-    ctx = LLVM.context(orig)
 
     # 1) extract out the MI from attributes
     llvmfn = LLVM.called_value(orig)
@@ -2231,7 +2432,7 @@ function enzyme_custom_augfwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMV
     #  - When OrcV2 only use a MaterializationUnit to avoid mutation of the module here
     
     target = GPUCompiler.NativeCompilerTarget()
-    params = Compiler.PrimalCompilerParams()
+    params = Compiler.PrimalCompilerParams(mode)
     job    = CompilerJob(target, funcspec, params)  
 
     otherMod, meta = GPUCompiler.codegen(:llvm, job, optimize=false, validate=false)
@@ -4073,6 +4274,7 @@ struct EnzymeCompilerParams <: AbstractEnzymeCompilerParams
 end
 
 struct PrimalCompilerParams <: AbstractEnzymeCompilerParams
+    mode::API.CDerivativeMode
 end
 
 ## job
@@ -4090,7 +4292,7 @@ GPUCompiler.runtime_slug(job::CompilerJob{EnzymeTarget}) = "enzyme"
 
 # provide a specific interpreter to use.
 GPUCompiler.get_interpreter(job::CompilerJob{<:Any,<:AbstractEnzymeCompilerParams}) =
-    Interpreter.EnzymeInterpeter(GPUCompiler.ci_cache(job), GPUCompiler.method_table(job), job.source.world)
+    Interpreter.EnzymeInterpeter(GPUCompiler.ci_cache(job), GPUCompiler.method_table(job), job.source.world, job.params.mode)
 
 include("compiler/utils.jl")
 include("compiler/passes.jl")
@@ -5439,7 +5641,7 @@ function GPUCompiler.codegen(output::Symbol, job::CompilerJob{<:EnzymeTarget};
 
     if parent_job === nothing
         primal_target = GPUCompiler.NativeCompilerTarget()
-        primal_params = Compiler.PrimalCompilerParams()
+        primal_params = Compiler.PrimalCompilerParams(mode)
         primal_job    = CompilerJob(primal_target, primal, primal_params)
     else
         primal_job = similar(parent_job, job.source)
@@ -5537,11 +5739,19 @@ end
 
     jobref = Ref(job)
 
+    jobref = Ref(job)
+
     actualRetType = nothing
     customDerivativeNames = String[]
     for (mi, k) in meta.compiled
         k_name = GPUCompiler.safe_name(k.specfunc)
-        has_custom_rule = EnzymeRules.has_rule(mi.specTypes)
+        has_custom_rule = false
+        if mode == API.DEM_ForwardMode
+            has_custom_rule = EnzymeRules.has_frule(mi.specTypes)
+        else
+            has_custom_rule = EnzymeRules.has_rrule(mi.specTypes)
+        end
+
         if !(haskey(functions(mod), k_name) || has_custom_rule)
             continue
         end
@@ -5565,6 +5775,7 @@ end
                 push!(attributes, a)
             end
             push!(attributes, StringAttribute("enzymejl_mi", string(convert(Int, pointer_from_objref(mi))); ctx))
+            push!(attributes, StringAttribute("enzymejl_job", string(convert(Int, pointer_from_objref(jobref))); ctx))
             push!(attributes, StringAttribute("enzyme_math", name; ctx))
             push!(attributes, EnumAttribute("noinline", 0; ctx))
             must_wrap |= llvmfn == primalf
@@ -5710,7 +5921,7 @@ end
         end
         primalf = wrapper_f
     end
-    
+
     source_sig = GPUCompiler.typed_signature(job)::Type
     primalf, returnRoots = lower_convention(source_sig, mod, primalf, actualRetType)
 
