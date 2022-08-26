@@ -219,18 +219,17 @@ macro safe_show(exs...)
 end
 
 declare_allocobj!(mod) = get_function!(mod, "julia.gc_alloc_obj") do ctx
-    T_jlvalue = LLVM.StructType(LLVMType[]; ctx)
-    T_prjlvalue = LLVM.PointerType(T_jlvalue, #= AddressSpace::Tracked =# 10)
-    
-	T_pjlvalue = LLVM.PointerType(T_jlvalue)
-    T_ppjlvalue = LLVM.PointerType(T_pjlvalue)
-    
-    T_pi8 = LLVM.PointerType(LLVM.IntType(8; ctx))
-
-	#TODO make size_t > 32 => 64, else 32
-	T_size = LLVM.IntType((sizeof(Csize_t)*8) > 32 ? 64 : 32; ctx)
-    LLVM.FunctionType(T_prjlvalue, [T_pi8, T_size, T_prjlvalue])
+    Tracked = 10
+    T_jlvalue = LLVM.StructType(LLVM.LLVMType[]; ctx)
+    T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
+    T_ppjlvalue = LLVM.PointerType(LLVM.PointerType(T_jlvalue))
+    T_size_t = convert(LLVM.LLVMType, Int; ctx)
+    LLVM.FunctionType(T_prjlvalue, [T_ppjlvalue, T_size_t, T_prjlvalue])
 end
+
+# TODO: Calculate that constant... see get_current_task
+current_task_offset() = -12
+
 function emit_allocobj!(B, T, size)
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
@@ -242,14 +241,18 @@ function emit_allocobj!(B, T, size)
     
 	T_jlvalue = LLVM.StructType(LLVMType[]; ctx)
     T_prjlvalue = LLVM.PointerType(T_jlvalue, #= AddressSpace::Tracked =# 10)
+    T_ppjlvalue = LLVM.PointerType(LLVM.PointerType(T_jlvalue))
 
-	ty = inttoptr!(B, LLVM.ConstantInt(convert(Int, pointer_from_objref(T)); ctx), LLVM.PointerType(T_jlvalue))
-	ty = addrspacecast!(B, ty, T_prjlvalue)
+	ty = LLVM.const_inttoptr(LLVM.ConstantInt(convert(Int, pointer_from_objref(T)); ctx), LLVM.PointerType(T_jlvalue))
+	ty = LLVM.const_addrspacecast(ty, T_prjlvalue)
+    
+    pgcstack = reinsert_gcmarker!(fn, B)
+    ct = inbounds_gep!(B, bitcast!(B, pgcstack, T_ppjlvalue), [LLVM.ConstantInt(current_task_offset(); ctx)])
+
 	size = LLVM.ConstantInt(T_size, size)
-    args = [reinsert_gcmarker!(fn), size, ty]
-	args[1] = bitcast!(B, args[1], parameters(eltype(llvmtype(func)))[1])
-    return call!(B, func, args)
+    return call!(B, func, [ct, size, ty])
 end
+
 function emit_allocobj!(B, T)
     emit_allocobj!(B, T, sizeof(T))
 end
@@ -2173,7 +2176,6 @@ function wait_rev(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gut
     return nothing
 end
 
-
 function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, normalR::Ptr{LLVM.API.LLVMValueRef}, shadowR::Ptr{LLVM.API.LLVMValueRef})::Cvoid
     orig = LLVM.Instruction(OrigCI)
     ctx = LLVM.context(orig)
@@ -2249,24 +2251,16 @@ function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
             if width == 1
                 Ty = Duplicated{arg.typ}
             else
-                Ty = BatchDuplicated{arg.typ, width}
-                ST = NTuple{Int64(width), arg.typ}
-                ival2 = emit_allocobj!(B, ST)
-                pc = pointercast!(B, ival2, LLVM.PointerType(llvmtype(ival), LLVM.addrspace(llvmtype(ival2))))
-                store!(B, ival, pc)
-                @show ival2
-                ival = ival2
+                Ty = BatchDuplicated{arg.typ, Int64(width)}
             end
             
             llty = convert(LLVMType, Ty; ctx)
-
 
             arval = LLVM.UndefValue(llty)
             arval = insert_value!(B, arval, val, 0)
             arval = insert_value!(B, arval, ival, 1)
 
             al = alloca!(alloctx, llvmtype(arval))
-            al = addrspacecast!(B, al, LLVM.PointerType(llvmtype(arval), 10))
             store!(B, arval, al)
             push!(args, al)
             push!(activity, Ty)
@@ -2289,13 +2283,13 @@ function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
             if width == 1
                 RT = Duplicated{RealRt}
             else
-                RT = BatchDuplicated{RealRt, width}
+                RT = BatchDuplicated{RealRt, Int64(width)}
             end
         else
             if width == 1
                 RT = DuplicatedNoNeed{RealRt}
             else
-                RT = BatchDuplicatedNoNeed{RealRt, width}
+                RT = BatchDuplicatedNoNeed{RealRt, Int64(width)}
             end
         end
     end
@@ -2329,8 +2323,6 @@ function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
         end
     end
 
-    @show args
-
     res = LLVM.call!(B, llvmf, args)
     
     hasNoRet = any(map(k->kind(k)==kind(EnumAttribute("noreturn"; ctx)), collect(function_attributes(llvmf))))
@@ -2343,7 +2335,6 @@ function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
         res = load!(B, sret)
     end
 
-    @show res
     shadowV = C_NULL
     normalV = C_NULL
 
@@ -2355,6 +2346,10 @@ function enzyme_custom_fwd(B::LLVM.API.LLVMBuilderRef, OrigCI::LLVM.API.LLVMValu
         if !needsPrimal
             shadowV = res.ref
         else
+            if !isa(llvmtype(res), LLVM.StructType) && !isa(llvmtype(res), LLVM.ArrayType)
+                emit_error(B, "Enzyme: incorrect return type of forward custom rule - "*(string(RT))*" "*string(activity))
+                return
+            end
             normalV = extract_value!(B, res, 0).ref
             shadowV = extract_value!(B, res, 1).ref
         end
