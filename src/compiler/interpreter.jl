@@ -137,7 +137,7 @@ function Core.Compiler.inlining_policy(
     if is_primitive_func(mi.specTypes)
         return nothing
     end
-    if inter.mode == API.DEM_ForwardMode
+    if interp.mode == API.DEM_ForwardMode
         if EnzymeRules.has_frule(mi.specTypes, interp.world)
             return nothing
         end
