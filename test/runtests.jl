@@ -41,6 +41,7 @@ end
 include("abi.jl")
 include("typetree.jl")
 include("rules.jl")
+include("rrules.jl")
 
 f0(x) = 1.0 + x
     function vrec(start, x)

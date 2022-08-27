@@ -31,7 +31,7 @@ function has_frule(@nospecialize(TT), world=Base.get_world_counter())
 end
 
 function has_rrule(@nospecialize(TT), world=Base.get_world_counter())
-    atype = Tuple{typeof(EnzymeRules.reverse), Type{TT}, Type, Vector{Type}}
+    atype = Tuple{typeof(EnzymeRules.reverse), Type{TT}, Type, Vector{Type}, Bool, Bool, UInt64, Vector{Bool}}
     
     if VERSION < v"1.8.0-"
         res = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), atype, world)
