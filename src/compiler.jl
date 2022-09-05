@@ -2282,27 +2282,6 @@ function enzyme_custom_setup_args(B, orig, gutils, mi)
     return args, activity, overwritten, actives
 end
 
-function enzyme_custom_extract_mi(orig)
-    mi = nothing
-    job = nothing
-    for fattr in collect(function_attributes(LLVM.called_value(orig)))
-        if isa(fattr, LLVM.StringAttribute)
-            if kind(fattr) == "enzymejl_mi"
-                ptr = reinterpret(Ptr{Cvoid}, parse(Int, LLVM.value(fattr)))
-                mi = Base.unsafe_pointer_to_objref(ptr)
-            end
-            if kind(fattr) == "enzymejl_job"
-                ptr = reinterpret(Ptr{Cvoid}, parse(Int, LLVM.value(fattr)))
-                job = Base.unsafe_pointer_to_objref(ptr)[]
-            end
-        end
-    end
-    if mi === nothing
-        GPUCompiler.@safe_error "Enzyme: Custom handler, could not find mi", orig, LLVM.called_value(orig)
-    end
-    return mi, job
-end
-    
 function enzyme_custom_setup_ret(gutils, orig, mi, job)
     width = API.EnzymeGradientUtilsGetWidth(gutils)
     interp = GPUCompiler.get_interpreter(job)
@@ -5905,8 +5884,6 @@ end
     must_wrap = false
     
     foundTys = Dict{String, Tuple{LLVM.FunctionType, Core.MethodInstance}}()
-
-    jobref = Ref(job)
 
     jobref = Ref(job)
 
