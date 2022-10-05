@@ -3886,7 +3886,6 @@ end
 const Tracked = 10
 
 # TODO: Calculate that constant... see get_current_task
-current_task_offset() = -12
 current_ptls_offset() = 14
 
 function julia_post_cache_store(SI::LLVM.API.LLVMValueRef, B::LLVM.API.LLVMBuilderRef, R2)::Ptr{LLVM.API.LLVMValueRef}
